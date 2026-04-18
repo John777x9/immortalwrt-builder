@@ -2,8 +2,8 @@ name: Build ImmortalWrt Firmware
 
 on:
   schedule:
-    - cron: '0 2 1 * *'           # Monthly on the 1st at 02:00 UTC
-  workflow_dispatch:
+    - cron: '0 2 1 * *'           # Monthly auto-build, 1st of month, 02:00 UTC
+  workflow_dispatch:               # Manual trigger only
     inputs:
       roles:
         description: 'Roles to build (comma-separated, or "all")'
@@ -13,13 +13,9 @@ on:
         description: 'ImmortalWrt branch'
         required: false
         default: 'openwrt-24.10'
-  push:
-    branches: [main]
-    paths:
-      - 'configs/**'
-      - 'files/**'
-      - 'docker/**'
-      - '.github/workflows/**'
+  # NOTE: push trigger intentionally REMOVED. Primary build is on GCP
+  # (faster, ccache-warm, user-owned). GH Actions is for unattended monthly
+  # rebuilds + emergency manual runs only.
 
 env:
   IMMORTALWRT_REPO: https://github.com/immortalwrt/immortalwrt.git

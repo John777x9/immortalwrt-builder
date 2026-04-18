@@ -82,19 +82,8 @@ commit network
 commit dhcp
 EOF
 
-# --- Banner: identify build ---
-cat > /etc/banner <<'BANNER'
-  ___                            _   _ __        __    _
- |_ _|_ __ ___  _ __ ___   ___  | |_| |\ \      / / __| |_
-  | || '_ ` _ \| '_ ` _ \ / _ \ | __| __\ \ /\ / / '__| __|
-  | || | | | | | | | | | | (_) || |_| |_ \ V  V /| |  | |_
- |___|_| |_| |_|_| |_| |_|\___/  \__|\__| \_/\_/ |_|   \__|
-   Production build (hardened) — built %BUILDDATE%
-
-   * LuCI: https://<router-ip>/   (uhttpd disabled, nginx HTTPS only)
-   * CA:   http://<router-ip>/ca.crt   (import to trust the cert)
-   * netdata: https://<router-ip>/netdata/   (creds in /root/.netdata-password)
-   * SSH: key-only by default. Add key via LuCI before next reboot.
-BANNER
+# --- Banner: written by per-role uci-defaults files (MTK has its own).
+# Common hardening MUST NOT overwrite it, since 91-cert-gen has
+# already substituted %CA_FPR% into role-specific banners.
 
 exit 0

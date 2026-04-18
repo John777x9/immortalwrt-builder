@@ -1,34 +1,39 @@
 #!/bin/sh
-# Services that require user-supplied configuration before they are safe to
-# auto-start are disabled at first boot. User enables them in LuCI after config.
+# Services that require user-supplied configuration AND would actively
+# misbehave or leak when started unconfigured. Disabled at first boot.
 #
-# Applied to ALL roles (main-router / bypass-gateway / mtk-filogic-enterprise).
+# IMPORTANT: client-side proxy frameworks (passwall / homeproxy /
+# sing-box / xray) are NOT disabled. They start with empty config and
+# idle harmlessly until the user imports a node via LuCI. Disabling
+# their init link breaks the LuCI "enable" toggle (which only flips UCI,
+# does not invoke init.d start), making the user think the firmware is
+# broken. Hard lesson learned from .202 deployment.
 
 set -e
 
-# Proxy frameworks: useless without nodes/subscriptions imported.
-# passwall_server is a SERVER (would expose proxy port to LAN) — must be off.
-PROXY_SERVICES="passwall passwall_server homeproxy sing-box xray"
+# passwall_server is a SERVER (would expose vmess/vless port to LAN).
+# Always off until the user explicitly configures and starts it.
+SERVER_SERVICES="passwall_server"
 
-# Discovery / file sharing helpers that leak presence on LAN
+# Discovery / file-sharing helpers that broadcast router presence on LAN
 DISCOVERY_SERVICES="wsdd2"
 
-# Tunnel / DDNS / web-shell — only useful when configured
+# Tunnel / DDNS / web-shell — useless without external config
 TUNNEL_SERVICES="frpc mwan3 ttyd freeradius3 strongswan"
 
-# (haproxy gets pulled in as a passwall dependency; we never use it ourselves)
+# Pulled in as a passwall dependency, never used standalone
 UNUSED_SERVICES="haproxy"
 
-ALL="$PROXY_SERVICES $DISCOVERY_SERVICES $TUNNEL_SERVICES $UNUSED_SERVICES"
+ALL="$SERVER_SERVICES $DISCOVERY_SERVICES $TUNNEL_SERVICES $UNUSED_SERVICES"
 
 DISABLED=""
 for svc in $ALL; do
-    if [ -x /etc/init.d/$svc ]; then
-        /etc/init.d/$svc disable 2>/dev/null || true
-        /etc/init.d/$svc stop    2>/dev/null || true
+    if [ -x "/etc/init.d/$svc" ]; then
+        "/etc/init.d/$svc" disable 2>/dev/null || true
+        "/etc/init.d/$svc" stop    2>/dev/null || true
         DISABLED="$DISABLED $svc"
     fi
 done
 
-logger -t services-disable "init disabled at boot:${DISABLED:- (none of these are installed)}"
+logger -t services-disable "init disabled at boot:${DISABLED:- (none installed)}"
 exit 0

@@ -143,11 +143,16 @@ EOF
 
 # ============================================================
 # 9. WireGuard server scaffold (interface up, no peers — add via LuCI)
+#    Only set up if `wg` (wireguard-tools) is actually installed and
+#    can generate a real Curve25519 keypair. Random bytes are NOT a
+#    valid wg key, so do NOT fall back to /dev/urandom.
 # ============================================================
-WG_PRIV=$(wg genkey 2>/dev/null || head -c 32 /dev/urandom | base64)
-WG_PUB=$(echo "$WG_PRIV" | wg pubkey 2>/dev/null || echo "PENDING")
-
-uci -q batch <<EOF
+WG_BIN=$(command -v wg 2>/dev/null || true)
+if [ -n "$WG_BIN" ]; then
+    WG_PRIV=$("$WG_BIN" genkey 2>/dev/null || true)
+    if [ -n "$WG_PRIV" ]; then
+        WG_PUB=$(echo "$WG_PRIV" | "$WG_BIN" pubkey 2>/dev/null || true)
+        uci -q batch <<EOF
 delete network.wg0 2>/dev/null || true
 set network.wg0=interface
 set network.wg0.proto='wireguard'
@@ -155,10 +160,6 @@ set network.wg0.private_key='$WG_PRIV'
 set network.wg0.listen_port='51820'
 add_list network.wg0.addresses='10.99.0.1/24'
 commit network
-EOF
-
-# Allow WireGuard port on WAN
-uci -q batch <<EOF
 add firewall rule
 set firewall.@rule[-1].name='Allow-WireGuard'
 set firewall.@rule[-1].src='wan'
@@ -167,10 +168,13 @@ set firewall.@rule[-1].dest_port='51820'
 set firewall.@rule[-1].target='ACCEPT'
 commit firewall
 EOF
-
-# Save WG public key to read it later
-echo "$WG_PUB" > /root/.wg-server-pubkey
-chmod 600 /root/.wg-server-pubkey
+        echo "$WG_PUB" > /root/.wg-server-pubkey
+        chmod 600 /root/.wg-server-pubkey
+        logger -t mtk-enterprise "WireGuard wg0 scaffold created (port 51820)"
+    fi
+else
+    logger -t mtk-enterprise "wireguard-tools missing, wg0 scaffold skipped"
+fi
 
 # ============================================================
 # 10. NTP: domestic servers

@@ -1,0 +1,59 @@
+#!/bin/sh
+# Runs once on first boot. Hardening common to both main router and bypass.
+
+# --- dropbear: key-only, no root password login ---
+uci -q batch <<EOF
+set dropbear.@dropbear[0].PasswordAuth='off'
+set dropbear.@dropbear[0].RootPasswordAuth='off'
+set dropbear.@dropbear[0].GatewayPorts='off'
+commit dropbear
+EOF
+
+# --- dnsmasq hardening ---
+uci -q batch <<EOF
+set dhcp.@dnsmasq[0].noresolv='1'
+set dhcp.@dnsmasq[0].rebind_protection='1'
+set dhcp.@dnsmasq[0].rebind_localhost='1'
+set dhcp.@dnsmasq[0].localservice='1'
+set dhcp.@dnsmasq[0].cachesize='2000'
+set dhcp.@dnsmasq[0].filter_aaaa='1'
+set dhcp.@dnsmasq[0].interface='br-lan'
+set dhcp.@dnsmasq[0].domainneeded='1'
+delete dhcp.@dnsmasq[0].server
+add_list dhcp.@dnsmasq[0].server='223.5.5.5'
+add_list dhcp.@dnsmasq[0].server='119.29.29.29'
+commit dhcp
+EOF
+
+# --- Disable noisy / risky services at boot ---
+for s in ttyd upnpd vlmcsd spotifyd rustdesk-server; do
+  [ -x /etc/init.d/$s ] && /etc/init.d/$s disable 2>/dev/null
+done
+
+# --- LuCI: enforce HTTPS redirect ---
+uci -q batch <<EOF
+set uhttpd.main.redirect_https='1'
+commit uhttpd
+EOF
+
+# --- IPv6: explicitly disable RA / DHCPv6 on LAN by default ---
+uci -q batch <<EOF
+set network.lan.ipv6='0'
+set dhcp.lan.dhcpv6='disabled'
+set dhcp.lan.ra='disabled'
+set dhcp.lan.ndp='disabled'
+commit network
+commit dhcp
+EOF
+
+# --- Banner: identify build ---
+cat > /etc/banner <<'BANNER'
+  ___                            _   _ __        __    _
+ |_ _|_ __ ___  _ __ ___   ___  | |_| |\ \      / / __| |_
+  | || '_ ` _ \| '_ ` _ \ / _ \ | __| __\ \ /\ / / '__| __|
+  | || | | | | | | | | | | (_) || |_| |_ \ V  V /| |  | |_
+ |___|_| |_| |_|_| |_| |_|\___/  \__|\__| \_/\_/ |_|   \__|
+   Production build — hardened defaults — built %BUILDDATE%
+BANNER
+
+exit 0

@@ -1,0 +1,25 @@
+  ╔══════════════════════════════════════════════════════════════════════╗
+  ║   ImmortalWrt 24.10  ·  Enterprise Edge Router (RAX3000M)            ║
+  ║   Built %BUILDDATE%                                                  ║
+  ╠══════════════════════════════════════════════════════════════════════╣
+  ║   Default LAN:    192.168.10.1                                       ║
+  ║   LuCI:           https://192.168.10.1/                              ║
+  ║   Self-signed CA: http://192.168.10.1/ca.crt                         ║
+  ║   CA fingerprint: %CA_FPR%                                           ║
+  ║                                                                      ║
+  ║   POST-INSTALL CHECKLIST                                             ║
+  ║   [ ] Set root password (LuCI -> System -> Administration)           ║
+  ║   [ ] Add SSH public key, then disable LuCI password if desired      ║
+  ║   [ ] Configure WAN: PPPoE creds or DHCP (LuCI -> Network)           ║
+  ║   [ ] Set strong WiFi passwords + enable radios:                     ║
+  ║         uci set wireless.radio0.disabled=0; uci set radio1.disabled=0║
+  ║         uci set wireless.default_radio0.key='<strong-passphrase>'    ║
+  ║   [ ] Add WireGuard peers (server pubkey: /root/.wg-server-pubkey)   ║
+  ║   [ ] Import http://192.168.10.1/ca.crt as trusted CA on clients     ║
+  ║   [ ] netdata: https://192.168.10.1/netdata/                         ║
+  ║         credentials in /root/.netdata-password                       ║
+  ║   [ ] (opt) Enable mwan3 after adding 2nd WAN                        ║
+  ║   [ ] (opt) Enable frpc after configuring upstream frps              ║
+  ║   [ ] (opt) Enable homeproxy after importing nodes                   ║
+  ║   [ ] (opt) Configure freeradius3 then enable for WPA2-Enterprise    ║
+  ╚══════════════════════════════════════════════════════════════════════╝

@@ -1,0 +1,52 @@
+#!/bin/sh
+# First-boot setup specific to BYPASS GATEWAY role.
+
+# --- LAN only: 192.168.10.2/24, gateway = 192.168.10.1 (your main router) ---
+uci -q batch <<EOF
+set network.lan.proto='static'
+set network.lan.ipaddr='192.168.10.2'
+set network.lan.netmask='255.255.255.0'
+set network.lan.gateway='192.168.10.1'
+set network.lan.dns='192.168.10.1'
+commit network
+EOF
+
+# --- Remove WAN interfaces (bypass has no WAN) ---
+uci -q delete network.wan
+uci -q delete network.wan6
+uci commit network
+
+# --- DHCP server: OFF (main router serves DHCP) ---
+uci -q batch <<EOF
+set dhcp.lan.ignore='1'
+commit dhcp
+EOF
+
+# --- Firewall: simplified — single zone (bypass doesn't NAT) ---
+uci -q batch <<EOF
+set firewall.@defaults[0].input='ACCEPT'
+set firewall.@defaults[0].output='ACCEPT'
+set firewall.@defaults[0].forward='ACCEPT'
+set firewall.@defaults[0].synflood_protect='1'
+set firewall.@zone[0].masq='0'
+commit firewall
+EOF
+
+# --- homeproxy default to bypass-CN routing ---
+[ -f /etc/config/homeproxy ] && uci -q batch <<EOF
+set homeproxy.config.routing_mode='bypass_mainland_china'
+set homeproxy.config.ipv6_support='0'
+set homeproxy.config.china_dns_server='223.5.5.5'
+commit homeproxy
+EOF
+
+# --- Banip enabled (lighter feeds for bypass) ---
+[ -f /etc/config/banip ] && uci -q batch <<EOF
+set banip.global.ban_enabled='1'
+set banip.global.ban_protov4='1'
+set banip.global.ban_protov6='0'
+add_list banip.global.ban_feed='dshield'
+commit banip
+EOF
+
+exit 0

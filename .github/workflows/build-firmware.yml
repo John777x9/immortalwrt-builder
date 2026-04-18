@@ -1,0 +1,200 @@
+name: Build ImmortalWrt Firmware
+
+on:
+  schedule:
+    - cron: '0 2 1 * *'           # Monthly on the 1st at 02:00 UTC
+  workflow_dispatch:
+    inputs:
+      roles:
+        description: 'Roles to build (comma-separated, or "all")'
+        required: false
+        default: 'all'
+      branch:
+        description: 'ImmortalWrt branch'
+        required: false
+        default: 'openwrt-24.10'
+  push:
+    branches: [main]
+    paths:
+      - 'configs/**'
+      - 'files/**'
+      - 'docker/**'
+      - '.github/workflows/**'
+
+env:
+  IMMORTALWRT_REPO: https://github.com/immortalwrt/immortalwrt.git
+  IMMORTALWRT_BRANCH: ${{ inputs.branch || 'openwrt-24.10' }}
+
+permissions:
+  contents: write           # required for release publishing
+
+jobs:
+  matrix-prep:
+    name: Compute build matrix
+    runs-on: ubuntu-22.04
+    outputs:
+      roles: ${{ steps.gen.outputs.roles }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: gen
+        run: |
+          if [[ "${{ inputs.roles }}" == "" || "${{ inputs.roles }}" == "all" ]]; then
+            ROLES=$(ls configs/*.config | xargs -n1 basename | sed 's/\.config$//' | jq -R . | jq -sc .)
+          else
+            ROLES=$(echo "${{ inputs.roles }}" | tr ',' '\n' | jq -R . | jq -sc .)
+          fi
+          echo "roles=$ROLES" >> "$GITHUB_OUTPUT"
+          echo "Matrix roles: $ROLES"
+
+  build:
+    needs: matrix-prep
+    name: Build ${{ matrix.role }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        role: ${{ fromJson(needs.matrix-prep.outputs.roles) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space (~30 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost \
+                      "$AGENT_TOOLSDIRECTORY" /usr/local/lib/android \
+                      /opt/hostedtoolcache 2>/dev/null || true
+          sudo apt-get -y autoremove --purge
+          sudo apt-get clean
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ccache ecj fastjar file g++ gawk gettext git \
+            java-propose-classpath libelf-dev libncurses-dev libssl-dev \
+            python3 python3-distutils python3-setuptools rsync subversion \
+            swig time unzip wget xsltproc zlib1g-dev bzip2 flex bison \
+            libpython3-dev qemu-utils zstd jq
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ matrix.role }}-${{ env.IMMORTALWRT_BRANCH }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ matrix.role }}-${{ env.IMMORTALWRT_BRANCH }}-
+            ccache-${{ matrix.role }}-
+
+      - name: Clone ImmortalWrt source
+        run: |
+          git clone --depth 1 -b "${IMMORTALWRT_BRANCH}" "${IMMORTALWRT_REPO}" source
+          cd source
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Apply diffconfig
+        run: |
+          cp configs/${{ matrix.role }}.config source/.config
+          cd source && make defconfig
+
+      - name: Layer baked-in /files/ overlay
+        run: |
+          mkdir -p source/files
+          [ -d files/common ] && cp -a files/common/. source/files/
+          [ -d "files/${{ matrix.role }}" ] && cp -a "files/${{ matrix.role }}/." source/files/
+          chmod +x source/files/etc/uci-defaults/* 2>/dev/null || true
+          BUILDDATE=$(date -u +%Y-%m-%dT%H:%MZ)
+          for f in source/files/etc/banner source/files/etc/uci-defaults/99-common-hardening; do
+            [ -f "$f" ] && sed -i "s|%BUILDDATE%|${BUILDDATE}|g" "$f"
+          done
+
+      - name: Build firmware
+        timeout-minutes: 300
+        working-directory: source
+        run: |
+          export CCACHE_DIR=~/.ccache
+          export PATH=/usr/lib/ccache:$PATH
+          make download -j8 V=s 2>&1 | tail -30 || true
+          make -j$(nproc) V=s
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p output
+          find source/bin/targets -mindepth 2 -maxdepth 2 -type d | while read d; do
+            cp "$d"/*.img.gz       output/ 2>/dev/null || true
+            cp "$d"/*.vmdk         output/ 2>/dev/null || true
+            cp "$d"/*.itb          output/ 2>/dev/null || true
+            cp "$d"/sha256sums     output/ 2>/dev/null || true
+            cp "$d"/profiles.json  output/ 2>/dev/null || true
+            cp "$d"/version.buildinfo output/ 2>/dev/null || true
+            cp "$d"/*.manifest     output/ 2>/dev/null || true
+          done
+          (cd output && sha256sum * 2>/dev/null > SHA256SUMS.txt) || true
+          ls -lh output/
+
+      - name: Upload artifacts (7-day retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.role }}
+          path: output/
+          retention-days: 7
+
+  release:
+    name: Publish monthly Release
+    needs: build
+    runs-on: ubuntu-22.04
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Stage release files
+        run: |
+          mkdir -p release
+          # Re-organize: each role gets its own subdir under release/
+          for d in artifacts/firmware-*/; do
+            ROLE=$(basename "$d" | sed 's/^firmware-//')
+            mkdir -p "release/${ROLE}"
+            cp -a "$d"/. "release/${ROLE}/"
+          done
+          (cd release && find . -type f | sort > FILES.txt)
+          ls -R release/
+      - name: Compute release tag
+        id: tag
+        run: |
+          DATE=$(date -u +%Y%m%d)
+          echo "tag=build-${DATE}-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "name=ImmortalWrt 24.10 ($(date -u +%Y-%m-%d))" >> "$GITHUB_OUTPUT"
+      - name: Create / update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.name }}
+          body: |
+            **Automated monthly build of ImmortalWrt 24.10 firmware.**
+
+            Built on `${{ github.event.repository.updated_at }}` from `${{ github.sha }}`.
+
+            ## Variants
+            - `main-router`             — x86_64 主路由（PPPoE / WireGuard / NAT）
+            - `bypass-gateway`          — x86_64 旁路网关（精简）
+            - `mtk-filogic-enterprise`  — CMCC RAX3000M 企业边界路由（aarch64）
+
+            ## Pick the right file
+            | 用途 | 文件名 |
+            |------|--------|
+            | x86 物理机 / U 盘 (UEFI) | `*-squashfs-combined-efi.img.gz` |
+            | x86 PVE / ESXi (UEFI VM) | `*-squashfs-combined-efi.vmdk` |
+            | RAX3000M sysupgrade      | `*-cmcc_rax3000m-squashfs-sysupgrade.itb` |
+
+            校验：见 `SHA256SUMS.txt`。
+          files: |
+            release/**/*.img.gz
+            release/**/*.vmdk
+            release/**/*.itb
+            release/**/sha256sums
+            release/**/SHA256SUMS.txt
+            release/**/*.manifest
+          draft: false
+          prerelease: false

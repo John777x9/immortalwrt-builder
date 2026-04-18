@@ -1,0 +1,247 @@
+#!/bin/sh
+# MTK RAX3000M enterprise router first-boot setup.
+# Single LAN at first boot; VLAN templates left commented for user to enable.
+# Dual-WAN scaffold ready (wan2 disabled until user assigns port).
+
+set -e
+
+# ============================================================
+# 1. LAN: 192.168.10.0/24 on br-lan (all switch ports + WiFi)
+# ============================================================
+uci -q batch <<EOF
+set network.lan=interface
+set network.lan.proto='static'
+set network.lan.ipaddr='192.168.10.1'
+set network.lan.netmask='255.255.255.0'
+set network.lan.ip6assign='60'
+commit network
+EOF
+
+# ============================================================
+# 2. Primary WAN on eth1 (PPPoE template; user fills creds in LuCI)
+# ============================================================
+uci -q batch <<EOF
+delete network.wan
+set network.wan=interface
+set network.wan.proto='dhcp'
+set network.wan.device='eth1'
+set network.wan.peerdns='0'
+set network.wan.dns='223.5.5.5 119.29.29.29'
+delete network.wan6
+commit network
+EOF
+
+# ============================================================
+# 3. Secondary WAN scaffold (disabled; user enables when adding 2nd uplink)
+# ============================================================
+uci -q batch <<EOF
+delete network.wan2 2>/dev/null || true
+set network.wan2=interface
+set network.wan2.proto='dhcp'
+set network.wan2.device='eth0.4094'
+set network.wan2.peerdns='0'
+set network.wan2.dns='119.29.29.29 223.5.5.5'
+set network.wan2.disabled='1'
+commit network
+EOF
+
+# ============================================================
+# 4. Firewall zones — WAN/WAN2 in same zone, default REJECT
+# ============================================================
+uci -q batch <<EOF
+set firewall.@defaults[0].input='ACCEPT'
+set firewall.@defaults[0].output='ACCEPT'
+set firewall.@defaults[0].forward='REJECT'
+set firewall.@defaults[0].synflood_protect='1'
+commit firewall
+EOF
+
+# Index 0 = lan zone, 1 = wan zone (typical OpenWrt defaults)
+uci -q batch <<EOF
+set firewall.@zone[1].name='wan'
+set firewall.@zone[1].network='wan wan2'
+set firewall.@zone[1].input='REJECT'
+set firewall.@zone[1].output='ACCEPT'
+set firewall.@zone[1].forward='REJECT'
+set firewall.@zone[1].masq='1'
+set firewall.@zone[1].mtu_fix='1'
+commit firewall
+EOF
+
+# ============================================================
+# 5. dnsmasq: noresolv (use https-dns-proxy upstream), filter AAAA, LAN-only
+# ============================================================
+uci -q batch <<EOF
+set dhcp.@dnsmasq[0].noresolv='1'
+set dhcp.@dnsmasq[0].rebind_protection='1'
+set dhcp.@dnsmasq[0].rebind_localhost='1'
+set dhcp.@dnsmasq[0].localservice='1'
+set dhcp.@dnsmasq[0].cachesize='2000'
+set dhcp.@dnsmasq[0].filter_aaaa='1'
+set dhcp.@dnsmasq[0].interface='br-lan'
+set dhcp.@dnsmasq[0].domain='lan'
+set dhcp.@dnsmasq[0].domainneeded='1'
+delete dhcp.@dnsmasq[0].server
+add_list dhcp.@dnsmasq[0].server='127.0.0.1#5053'
+commit dhcp
+EOF
+
+# ============================================================
+# 6. https-dns-proxy: forward to Cloudflare + AliDNS DoH
+# ============================================================
+uci -q batch <<EOF
+delete https-dns-proxy 2>/dev/null || true
+add https-dns-proxy https-dns-proxy
+set https-dns-proxy.@https-dns-proxy[-1].bootstrap_dns='223.5.5.5'
+set https-dns-proxy.@https-dns-proxy[-1].resolver_url='https://dns.alidns.com/dns-query'
+set https-dns-proxy.@https-dns-proxy[-1].listen_addr='127.0.0.1'
+set https-dns-proxy.@https-dns-proxy[-1].listen_port='5053'
+add https-dns-proxy https-dns-proxy
+set https-dns-proxy.@https-dns-proxy[-1].bootstrap_dns='1.1.1.1'
+set https-dns-proxy.@https-dns-proxy[-1].resolver_url='https://1.1.1.1/dns-query'
+set https-dns-proxy.@https-dns-proxy[-1].listen_addr='127.0.0.1'
+set https-dns-proxy.@https-dns-proxy[-1].listen_port='5054'
+commit https-dns-proxy
+EOF
+
+# ============================================================
+# 7. dropbear: key-only, LAN-only
+# ============================================================
+uci -q batch <<EOF
+set dropbear.@dropbear[0].PasswordAuth='off'
+set dropbear.@dropbear[0].RootPasswordAuth='off'
+set dropbear.@dropbear[0].GatewayPorts='off'
+set dropbear.@dropbear[0].Interface='br-lan'
+commit dropbear
+EOF
+
+# ============================================================
+# 8. WiFi: defaults disabled until user sets passwords
+# ============================================================
+uci -q batch <<EOF
+set wireless.radio0.disabled='1'
+set wireless.radio0.country='CN'
+set wireless.radio0.htmode='HE40'
+set wireless.radio0.txpower='20'
+set wireless.default_radio0.ssid='Corp-2G'
+set wireless.default_radio0.encryption='sae-mixed'
+set wireless.default_radio0.key='REPLACE-ME-MIN-12-CHARS'
+set wireless.default_radio0.network='lan'
+set wireless.default_radio0.disassoc_low_ack='0'
+
+set wireless.radio1.disabled='1'
+set wireless.radio1.country='CN'
+set wireless.radio1.htmode='HE80'
+set wireless.radio1.txpower='23'
+set wireless.default_radio1.ssid='Corp-5G'
+set wireless.default_radio1.encryption='sae-mixed'
+set wireless.default_radio1.key='REPLACE-ME-MIN-12-CHARS'
+set wireless.default_radio1.network='lan'
+set wireless.default_radio1.disassoc_low_ack='0'
+commit wireless
+EOF
+
+# ============================================================
+# 9. WireGuard server scaffold (interface up, no peers — add via LuCI)
+# ============================================================
+WG_PRIV=$(wg genkey 2>/dev/null || head -c 32 /dev/urandom | base64)
+WG_PUB=$(echo "$WG_PRIV" | wg pubkey 2>/dev/null || echo "PENDING")
+
+uci -q batch <<EOF
+delete network.wg0 2>/dev/null || true
+set network.wg0=interface
+set network.wg0.proto='wireguard'
+set network.wg0.private_key='$WG_PRIV'
+set network.wg0.listen_port='51820'
+add_list network.wg0.addresses='10.99.0.1/24'
+commit network
+EOF
+
+# Allow WireGuard port on WAN
+uci -q batch <<EOF
+add firewall rule
+set firewall.@rule[-1].name='Allow-WireGuard'
+set firewall.@rule[-1].src='wan'
+set firewall.@rule[-1].proto='udp'
+set firewall.@rule[-1].dest_port='51820'
+set firewall.@rule[-1].target='ACCEPT'
+commit firewall
+EOF
+
+# Save WG public key to read it later
+echo "$WG_PUB" > /root/.wg-server-pubkey
+chmod 600 /root/.wg-server-pubkey
+
+# ============================================================
+# 10. NTP: domestic servers
+# ============================================================
+uci -q batch <<EOF
+delete system.ntp.server 2>/dev/null || true
+add_list system.ntp.server='ntp.aliyun.com'
+add_list system.ntp.server='ntp.tencent.com'
+add_list system.ntp.server='ntp.ntsc.ac.cn'
+add_list system.ntp.server='cn.pool.ntp.org'
+set system.@system[0].timezone='CST-8'
+set system.@system[0].zonename='Asia/Shanghai'
+commit system
+EOF
+
+# ============================================================
+# 11. banip: enable with public-IP feeds (no overlap with banip default)
+# ============================================================
+uci -q batch <<EOF
+set banip.global.ban_enabled='1'
+set banip.global.ban_logsrcdst='src'
+set banip.global.ban_autodetect='1'
+set banip.global.ban_protov4='1'
+set banip.global.ban_protov6='0'
+set banip.global.ban_nicelimit='1'
+set banip.global.ban_loglimit='100'
+add_list banip.global.ban_feed='cinsscore'
+add_list banip.global.ban_feed='dshield'
+add_list banip.global.ban_feed='firehol1'
+commit banip
+EOF
+
+# ============================================================
+# 12. nginx: enforce HTTPS for LuCI; HTTP only serves /ca.crt
+# ============================================================
+cat > /etc/nginx/conf.d/_ca-cert.conf <<'EOF'
+# Allow HTTP access to /ca.crt for client trust import
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    location = /ca.crt {
+        root /www;
+        default_type application/x-x509-ca-cert;
+        add_header Content-Disposition 'attachment; filename="iwrt-ca.crt"';
+    }
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+EOF
+
+# ============================================================
+# 13. WAN-side IPv6: disabled by default (no public PD assumed)
+# ============================================================
+echo "net.ipv6.conf.all.disable_ipv6 = 1" >> /etc/sysctl.conf
+echo "net.ipv6.conf.default.disable_ipv6 = 1" >> /etc/sysctl.conf
+
+uci -q batch <<EOF
+set dhcp.lan.dhcpv6='disabled'
+set dhcp.lan.ra='disabled'
+set dhcp.lan.ndp='disabled'
+commit dhcp
+EOF
+
+# ============================================================
+# 14. system: hostname + sane sysctl
+# ============================================================
+uci -q batch <<EOF
+set system.@system[0].hostname='iwrt-edge'
+commit system
+EOF
+
+logger -t mtk-enterprise "first-boot enterprise setup complete (LAN=192.168.10.1, WAN=eth1 dhcp, wifi-disabled)"
+exit 0

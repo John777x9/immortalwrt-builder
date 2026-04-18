@@ -45,6 +45,12 @@ cp "${CONFIG}" "${SRC}/.config"
 mkdir -p "${OUT}" "${CCACHE}"
 
 echo ">>> Running build for role=${ROLE}, jobs=${JOBS} ..."
+# Track start time so we can reject stale artifacts from previous builds.
+BUILD_START_EPOCH=$(date +%s)
+
+# CRITICAL: must capture real make exit code. Previous versions piped output
+# or swallowed failures which produced false-positive "OK" with stale output.
+set +e
 docker run --rm \
     --name "iwrt-build-${ROLE}" \
     -u "$(id -u):$(id -g)" \
@@ -64,26 +70,47 @@ docker run --rm \
         echo '--- compile ---'
         make -j${JOBS} V=s
     "
+BUILD_RC=$?
+set -e
 
-echo ">>> Collecting artifacts ..."
-# Auto-detect target dir (x86/64, mediatek/filogic, etc)
+if [[ ${BUILD_RC} -ne 0 ]]; then
+    echo
+    echo "================ BUILD FAILED: ${ROLE} (rc=${BUILD_RC}) ================"
+    # Wipe stale output so next consumer doesn't mistake old artifacts for new ones
+    rm -f "${OUT}"/* 2>/dev/null || true
+    exit ${BUILD_RC}
+fi
+
+echo ">>> Collecting artifacts (only files newer than build start) ..."
+# Clear old OUT to prevent stale confusion
+rm -f "${OUT}"/* 2>/dev/null || true
+
 ARTDIRS=$(find "${SRC}/bin/targets" -mindepth 2 -maxdepth 2 -type d 2>/dev/null)
+COUNT=0
 for ARTDIR in $ARTDIRS; do
-    cp -v "${ARTDIR}"/*.img.gz "${OUT}/" 2>/dev/null || true
-    cp -v "${ARTDIR}"/*.vmdk   "${OUT}/" 2>/dev/null || true
-    cp -v "${ARTDIR}"/*.itb    "${OUT}/" 2>/dev/null || true
-    cp -v "${ARTDIR}"/*.bin    "${OUT}/" 2>/dev/null || true
-    cp -v "${ARTDIR}"/sha256sums "${OUT}/sha256sums" 2>/dev/null || true
-    cp -v "${ARTDIR}"/profiles.json "${OUT}/profiles.json" 2>/dev/null || true
-    cp -v "${ARTDIR}"/version.buildinfo "${OUT}/" 2>/dev/null || true
-    cp -v "${ARTDIR}"/*.manifest "${OUT}/" 2>/dev/null || true
+    for ext in img.gz vmdk itb bin; do
+        for f in "${ARTDIR}"/*.${ext}; do
+            [[ -f "$f" ]] || continue
+            mt=$(stat -c %Y "$f")
+            if [[ $mt -ge $((BUILD_START_EPOCH - 60)) ]]; then
+                cp -v "$f" "${OUT}/" && COUNT=$((COUNT+1))
+            fi
+        done
+    done
+    for f in sha256sums profiles.json version.buildinfo; do
+        [[ -f "${ARTDIR}/$f" ]] && cp -v "${ARTDIR}/$f" "${OUT}/" 2>/dev/null || true
+    done
+    for f in "${ARTDIR}"/*.manifest; do
+        [[ -f "$f" ]] && cp -v "$f" "${OUT}/" 2>/dev/null || true
+    done
 done
 
-if ls "${OUT}"/* >/dev/null 2>&1; then
-    echo
-    echo "================ BUILD OK: ${ROLE} ================"
-    ls -lh "${OUT}/"
-else
-    echo "ERROR: no artifacts collected"
+if [[ $COUNT -eq 0 ]]; then
+    echo "ERROR: no fresh artifacts produced by build (all files older than build start)"
+    rm -f "${OUT}"/* 2>/dev/null || true
     exit 5
 fi
+
+echo
+echo "================ BUILD OK: ${ROLE} — ${COUNT} fresh images ================"
+ls -lh "${OUT}/"

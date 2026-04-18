@@ -47,20 +47,12 @@ EOF
 
 # ============================================================
 # 4. Firewall zones — WAN/WAN2 in same zone, default REJECT
-#    flow_offloading + fullcone are INCOMPATIBLE with transparent
-#    proxy (passwall/sing-box/openclash) — they bypass nft chain.
-#    Kept off so proxy works out-of-the-box; user can re-enable
-#    after disabling proxy.
+#    (flow_offloading + fullcone disabled in common 99-common-hardening)
 # ============================================================
 uci -q batch <<EOF
 set firewall.@defaults[0].input='ACCEPT'
 set firewall.@defaults[0].output='ACCEPT'
 set firewall.@defaults[0].forward='REJECT'
-set firewall.@defaults[0].synflood_protect='1'
-set firewall.@defaults[0].flow_offloading='0'
-set firewall.@defaults[0].flow_offloading_hw='0'
-set firewall.@defaults[0].fullcone='0'
-set firewall.@defaults[0].fullcone6='0'
 commit firewall
 EOF
 

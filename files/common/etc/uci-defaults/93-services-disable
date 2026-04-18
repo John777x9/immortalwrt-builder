@@ -1,0 +1,34 @@
+#!/bin/sh
+# Services that require user-supplied configuration before they are safe to
+# auto-start are disabled at first boot. User enables them in LuCI after config.
+#
+# Applied to ALL roles (main-router / bypass-gateway / mtk-filogic-enterprise).
+
+set -e
+
+# Proxy frameworks: useless without nodes/subscriptions imported.
+# passwall_server is a SERVER (would expose proxy port to LAN) — must be off.
+PROXY_SERVICES="passwall passwall_server homeproxy sing-box xray"
+
+# Discovery / file sharing helpers that leak presence on LAN
+DISCOVERY_SERVICES="wsdd2"
+
+# Tunnel / DDNS / web-shell — only useful when configured
+TUNNEL_SERVICES="frpc mwan3 ttyd freeradius3 strongswan"
+
+# (haproxy gets pulled in as a passwall dependency; we never use it ourselves)
+UNUSED_SERVICES="haproxy"
+
+ALL="$PROXY_SERVICES $DISCOVERY_SERVICES $TUNNEL_SERVICES $UNUSED_SERVICES"
+
+DISABLED=""
+for svc in $ALL; do
+    if [ -x /etc/init.d/$svc ]; then
+        /etc/init.d/$svc disable 2>/dev/null || true
+        /etc/init.d/$svc stop    2>/dev/null || true
+        DISABLED="$DISABLED $svc"
+    fi
+done
+
+logger -t services-disable "init disabled at boot:${DISABLED:- (none of these are installed)}"
+exit 0

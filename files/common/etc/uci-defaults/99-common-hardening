@@ -38,12 +38,12 @@ if [ -x /etc/init.d/https-dns-proxy ]; then
   while uci -q delete https-dns-proxy.@https-dns-proxy[0]; do :; done
   uci -q batch <<EOF
 add https-dns-proxy https-dns-proxy
-set https-dns-proxy.@https-dns-proxy[-1].bootstrap_dns='223.5.5.5'
+set https-dns-proxy.@https-dns-proxy[-1].bootstrap_dns='223.5.5.5,223.6.6.6'
 set https-dns-proxy.@https-dns-proxy[-1].resolver_url='https://dns.alidns.com/dns-query'
 set https-dns-proxy.@https-dns-proxy[-1].listen_addr='127.0.0.1'
 set https-dns-proxy.@https-dns-proxy[-1].listen_port='5053'
 add https-dns-proxy https-dns-proxy
-set https-dns-proxy.@https-dns-proxy[-1].bootstrap_dns='120.53.53.53'
+set https-dns-proxy.@https-dns-proxy[-1].bootstrap_dns='120.53.53.53,1.12.12.12'
 set https-dns-proxy.@https-dns-proxy[-1].resolver_url='https://doh.pub/dns-query'
 set https-dns-proxy.@https-dns-proxy[-1].listen_addr='127.0.0.1'
 set https-dns-proxy.@https-dns-proxy[-1].listen_port='5054'

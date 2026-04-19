@@ -1,62 +1,11 @@
 #!/bin/sh
-# Runs once on first boot. Hardening common to all roles
-# (main-router / bypass-gateway / mtk-filogic-enterprise).
-
-# --- dropbear: key-only, no root password login ---
-uci -q batch <<EOF
-set dropbear.@dropbear[0].PasswordAuth='off'
-set dropbear.@dropbear[0].RootPasswordAuth='off'
-set dropbear.@dropbear[0].GatewayPorts='off'
-commit dropbear
-EOF
-
-# --- dnsmasq hardening (general flags only) ---
-# IMPORTANT: do NOT set dhcp.@dnsmasq[0].server here. Per-role uci-defaults
-# (e.g. 99-bypass-gateway) configures DNS upstream and would be RACE-LOST
-# under alphabetic execution order ('99-bypass-gateway' runs BEFORE
-# '99-common-hardening', so common would overwrite bypass's DNS choice).
-# strictorder=1 lets per-role files specify ordered fallback (sing-box first,
-# https-dns-proxy second).
-uci -q batch <<EOF
-set dhcp.@dnsmasq[0].noresolv='1'
-set dhcp.@dnsmasq[0].rebind_protection='1'
-set dhcp.@dnsmasq[0].rebind_localhost='1'
-set dhcp.@dnsmasq[0].localservice='1'
-set dhcp.@dnsmasq[0].cachesize='2000'
-set dhcp.@dnsmasq[0].filter_aaaa='1'
-set dhcp.@dnsmasq[0].interface='br-lan'
-set dhcp.@dnsmasq[0].domainneeded='1'
-set dhcp.@dnsmasq[0].strictorder='1'
-commit dhcp
-EOF
-
-# --- https-dns-proxy: ensure DoH instances are configured ---
-# IMPORTANT: package post-install seeds 2 default instances (cloudflare/google
-# which are both blocked in CN). 'uci delete https-dns-proxy' alone does NOT
-# clean anonymous sections — they linger and we end up with 4 instances, 2
-# pairs colliding on the same ports. So delete each section in a loop first.
-if [ -x /etc/init.d/https-dns-proxy ]; then
-  while uci -q delete https-dns-proxy.@https-dns-proxy[0]; do :; done
-  uci -q batch <<EOF
-add https-dns-proxy https-dns-proxy
-set https-dns-proxy.@https-dns-proxy[-1].bootstrap_dns='223.5.5.5,223.6.6.6'
-set https-dns-proxy.@https-dns-proxy[-1].resolver_url='https://dns.alidns.com/dns-query'
-set https-dns-proxy.@https-dns-proxy[-1].listen_addr='127.0.0.1'
-set https-dns-proxy.@https-dns-proxy[-1].listen_port='5053'
-add https-dns-proxy https-dns-proxy
-set https-dns-proxy.@https-dns-proxy[-1].bootstrap_dns='120.53.53.53,1.12.12.12'
-set https-dns-proxy.@https-dns-proxy[-1].resolver_url='https://doh.pub/dns-query'
-set https-dns-proxy.@https-dns-proxy[-1].listen_addr='127.0.0.1'
-set https-dns-proxy.@https-dns-proxy[-1].listen_port='5054'
-commit https-dns-proxy
-EOF
-fi
+# Minimal first-boot hardening common to all roles.
+# Only necessary functional changes — user sets passwords / wifi / nodes
+# via LuCI after flashing.
 
 # --- Firewall: disable hardware/software fastpath + fullcone ---
-# These bypass nftables chain once a flow is established, breaking
-# transparent proxy frameworks (passwall / openclash / sing-box tproxy).
-# Verified live on RAX3000M: with fastpath on, PSW_DNS counter stayed
-# at 0 packets while client browsing failed.
+# REQUIRED for transparent proxy (sing-box / passwall) to work.
+# fastpath bypasses nft chains once a flow is established → tproxy misses.
 uci -q batch <<EOF
 set firewall.@defaults[0].flow_offloading='0'
 set firewall.@defaults[0].flow_offloading_hw='0'
@@ -66,25 +15,23 @@ set firewall.@defaults[0].synflood_protect='1'
 commit firewall
 EOF
 
-# --- Disable noisy / risky services at boot ---
-# (uhttpd is KEPT enabled — it serves LuCI. We learned the hard way
-#  that nginx+LuCI integration in this feed doesn't ship luci-ssl-nginx
-#  with a working backend. uhttpd has native lua LuCI support.)
-for s in ttyd upnpd vlmcsd spotifyd rustdesk-server; do
-  [ -x /etc/init.d/$s ] && /etc/init.d/$s disable 2>/dev/null
-done
-
-# --- uhttpd: enable HTTPS on :443 (native SSL, cert auto-gen by px5g)
+# --- dnsmasq: standard hardening flags only (NO server config — set per role) ---
+# Per-role uci-defaults set dhcp.@dnsmasq[0].server.
+# NOTE: alphabetic order has 99-bypass-gateway BEFORE 99-common-hardening,
+# so this file MUST NOT touch dnsmasq.server.
 uci -q batch <<EOF
-del_list uhttpd.main.listen_https='0.0.0.0:443' 2>/dev/null
-del_list uhttpd.main.listen_https='[::]:443' 2>/dev/null
-add_list uhttpd.main.listen_https='0.0.0.0:443'
-add_list uhttpd.main.listen_https='[::]:443'
-set uhttpd.main.redirect_https='0'
-commit uhttpd
+set dhcp.@dnsmasq[0].noresolv='1'
+set dhcp.@dnsmasq[0].rebind_protection='1'
+set dhcp.@dnsmasq[0].rebind_localhost='1'
+set dhcp.@dnsmasq[0].localservice='1'
+set dhcp.@dnsmasq[0].cachesize='2000'
+set dhcp.@dnsmasq[0].filter_aaaa='1'
+set dhcp.@dnsmasq[0].interface='br-lan'
+set dhcp.@dnsmasq[0].domainneeded='1'
+commit dhcp
 EOF
 
-# --- IPv6: explicitly disable RA / DHCPv6 on LAN by default ---
+# --- IPv6: disable on LAN by default (re-enable in LuCI when needed) ---
 uci -q batch <<EOF
 set network.lan.ipv6='0'
 set dhcp.lan.dhcpv6='disabled'
@@ -93,9 +40,5 @@ set dhcp.lan.ndp='disabled'
 commit network
 commit dhcp
 EOF
-
-# --- Banner: written by per-role uci-defaults files (MTK has its own).
-# Common hardening MUST NOT overwrite it, since 91-cert-gen has
-# already substituted %CA_FPR% into role-specific banners.
 
 exit 0

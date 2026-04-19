@@ -1,7 +1,11 @@
 #!/bin/sh
-# First-boot setup specific to BYPASS GATEWAY role.
+# Bypass-gateway role first-boot:
+#   - Static LAN, no DHCP server (main router serves DHCP)
+#   - No WAN
+#   - dnsmasq → sing-box DNS (anti-leak, sing-box's own routing)
+#   - homeproxy default to bypass-mainland-china mode
 
-# --- LAN only: 192.168.10.2/24, gateway = 192.168.10.1 (your main router) ---
+# --- LAN: static, default to .10.2 (user changes in LuCI as needed) ---
 uci -q batch <<EOF
 set network.lan.proto='static'
 set network.lan.ipaddr='192.168.10.2'
@@ -11,54 +15,26 @@ set network.lan.dns='192.168.10.1'
 commit network
 EOF
 
-# --- Remove WAN interfaces (bypass has no WAN) ---
+# --- Remove WAN (bypass has no WAN) ---
 uci -q delete network.wan
 uci -q delete network.wan6
 uci commit network
 
-# --- DHCP server: OFF (main router serves DHCP) ---
-uci -q batch <<EOF
-set dhcp.lan.ignore='1'
-commit dhcp
-EOF
+# --- DHCP server OFF (main router serves DHCP) ---
+uci -q set dhcp.lan.ignore='1'
+uci commit dhcp
 
-# --- Firewall: simplified — single zone (bypass doesn't NAT) ---
-uci -q batch <<EOF
-set firewall.@defaults[0].input='ACCEPT'
-set firewall.@defaults[0].output='ACCEPT'
-set firewall.@defaults[0].forward='ACCEPT'
-set firewall.@defaults[0].synflood_protect='1'
-set firewall.@zone[0].masq='0'
-commit firewall
-EOF
+# --- DNS upstream → sing-box (zero-leak split routing) ---
+uci -q delete dhcp.@dnsmasq[0].server
+uci -q add_list dhcp.@dnsmasq[0].server='127.0.0.1#5333'
+uci commit dhcp
 
-# --- homeproxy default to bypass-CN routing ---
+# --- homeproxy default settings ---
 [ -f /etc/config/homeproxy ] && uci -q batch <<EOF
 set homeproxy.config.routing_mode='bypass_mainland_china'
 set homeproxy.config.ipv6_support='0'
 set homeproxy.config.china_dns_server='223.5.5.5'
 commit homeproxy
-EOF
-
-# --- DNS: dnsmasq → sing-box DNS module (port 5333).
-# sing-box has built-in anti-leak: CN domains via china-dns direct,
-# non-CN via main-dns through proxy. Zero leak in proxy mode.
-# https-dns-proxy is REMOVED from this role (sing-box covers the same job
-# better — was just bloat from earlier iteration).
-uci -q batch <<EOF
-delete dhcp.@dnsmasq[0].server
-add_list dhcp.@dnsmasq[0].server='127.0.0.1#5333'
-commit dhcp
-EOF
-[ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy disable 2>/dev/null
-
-# --- Banip enabled (lighter feeds for bypass) ---
-[ -f /etc/config/banip ] && uci -q batch <<EOF
-set banip.global.ban_enabled='1'
-set banip.global.ban_protov4='1'
-set banip.global.ban_protov6='0'
-add_list banip.global.ban_feed='dshield'
-commit banip
 EOF
 
 exit 0

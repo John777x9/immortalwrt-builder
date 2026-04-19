@@ -1,14 +1,19 @@
 #!/bin/sh
-# First-boot setup specific to MAIN ROUTER role.
+# Main-router role first-boot:
+#   - LAN 192.168.10.1, DHCP server on
+#   - WAN scaffold (eth1, DHCP — user changes to PPPoE in LuCI)
+#   - WAN firewall hardened
+#   - dnsmasq → sing-box DNS (anti-leak)
+#   - UPnP installed but disabled by default
 
-# --- LAN: 192.168.10.1/24 (change to taste before flashing) ---
+# --- LAN ---
 uci -q batch <<EOF
 set network.lan.ipaddr='192.168.10.1'
 set network.lan.netmask='255.255.255.0'
 commit network
 EOF
 
-# --- WAN scaffold: DHCP by default; user picks PPPoE in LuCI ---
+# --- WAN scaffold (DHCP placeholder — user picks PPPoE in LuCI) ---
 uci -q batch <<EOF
 delete network.wan
 set network.wan=interface
@@ -19,7 +24,7 @@ set network.wan.dns='223.5.5.5 119.29.29.29'
 commit network
 EOF
 
-# --- Firewall: default reject on WAN input ---
+# --- Firewall: WAN zone default REJECT (commercial standard) ---
 uci -q batch <<EOF
 set firewall.@zone[1].input='REJECT'
 set firewall.@zone[1].output='ACCEPT'
@@ -29,36 +34,12 @@ set firewall.@zone[1].mtu_fix='1'
 commit firewall
 EOF
 
-# --- UPnP installed but DISABLED by default (enable in LuCI when needed) ---
+# --- DNS upstream → sing-box (zero-leak split routing when proxy active) ---
+uci -q delete dhcp.@dnsmasq[0].server
+uci -q add_list dhcp.@dnsmasq[0].server='127.0.0.1#5333'
+uci commit dhcp
+
+# --- UPnP installed but DISABLED (enable in LuCI when needed) ---
 [ -x /etc/init.d/miniupnpd ] && /etc/init.d/miniupnpd disable 2>/dev/null
-uci -q set upnpd.config.enabled='0'
-uci commit upnpd 2>/dev/null
-
-# --- SQM scaffold (commented; user fills in WAN bandwidth) ---
-uci -q batch <<EOF
-delete sqm.eth1
-set sqm.eth1=queue
-set sqm.eth1.interface='eth1'
-set sqm.eth1.enabled='0'
-set sqm.eth1.download='0'
-set sqm.eth1.upload='0'
-set sqm.eth1.qdisc='cake'
-set sqm.eth1.script='piece_of_cake.qos'
-set sqm.eth1.linklayer='ethernet'
-commit sqm
-EOF
-
-# --- Banip: minimal sane default ---
-uci -q batch <<EOF
-set banip.global.ban_enabled='1'
-set banip.global.ban_logsrcdst='src'
-set banip.global.ban_autodetect='1'
-set banip.global.ban_protov4='1'
-set banip.global.ban_protov6='0'
-add_list banip.global.ban_feed='cinsscore'
-add_list banip.global.ban_feed='firehol1'
-add_list banip.global.ban_feed='dshield'
-commit banip
-EOF
 
 exit 0

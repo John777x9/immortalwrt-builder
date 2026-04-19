@@ -1,18 +1,21 @@
 #!/bin/sh
-# Harden netdata: bind to localhost only, disable cloud/registry/anonymous
-# stats. External access is via SSH tunnel (ssh -L 19999:localhost:19999
-# root@router) then http://localhost:19999/ in a browser.
+# Harden netdata for LAN access:
+#   - Bind to LAN IP + 127.0.0.1 (not all interfaces)
+#   - Allow web access only from RFC1918 LAN ranges
+#   - Disable cloud, registry, anonymous stats
+#   - Firewall REJECT :19999 from WAN zone (LuCI iframe still works on LAN)
 #
-# We deliberately do NOT set up a reverse proxy. The prior attempt with
-# nginx was over-engineered and broken (missing packages in 24.10 feed).
-# LAN-bound + firewall REJECT + SSH-tunnel-only is simpler and auditable.
+# Trade-off: netdata 1.38 has no built-in auth, so anyone on LAN can view.
+# For an enterprise edge router on a trusted LAN that's acceptable; if you
+# want stricter, use 'ssh -L 19999:localhost:19999 root@router' tunnel.
 
 set -e
 
 NETDATA_CONF=/etc/netdata/netdata.conf
+LAN_IP=$(uci -q get network.lan.ipaddr || echo "192.168.1.1")
 
 mkdir -p /etc/netdata
-cat > "$NETDATA_CONF" <<'EOF'
+cat > "$NETDATA_CONF" <<EOF
 [global]
     run as user = netdata
     memory mode = ram
@@ -21,9 +24,9 @@ cat > "$NETDATA_CONF" <<'EOF'
     anonymous statistics = no
 
 [web]
-    bind to = 127.0.0.1
-    allow connections from = localhost
-    allow dashboard from = localhost
+    bind to = ${LAN_IP} 127.0.0.1
+    allow connections from = localhost 192.168.*.* 10.*.*.* 172.16.*.* 172.17.*.* 172.18.*.* 172.19.*.* 172.20.*.* 172.21.*.* 172.22.*.* 172.23.*.* 172.24.*.* 172.25.*.* 172.26.*.* 172.27.*.* 172.28.*.* 172.29.*.* 172.30.*.* 172.31.*.*
+    allow dashboard from = localhost 192.168.*.* 10.*.*.* 172.16.*.* 172.17.*.* 172.18.*.* 172.19.*.* 172.20.*.* 172.21.*.* 172.22.*.* 172.23.*.* 172.24.*.* 172.25.*.* 172.26.*.* 172.27.*.* 172.28.*.* 172.29.*.* 172.30.*.* 172.31.*.*
     allow badges from = *
     allow streaming from = none
     allow netdata.conf from = localhost
@@ -49,11 +52,12 @@ cat > "$NETDATA_CONF" <<'EOF'
     go.d = no
 EOF
 
-# Firewall: ensure :19999 can't leak even if bind is ever widened later
+# Firewall: REJECT :19999 from WAN zone only (NOT '*' — that would block LAN too,
+# breaking LuCI's Netdata iframe). LAN access remains.
 uci -q batch <<EOF
 add firewall rule
-set firewall.@rule[-1].name='Block-Netdata-External'
-set firewall.@rule[-1].src='*'
+set firewall.@rule[-1].name='Block-Netdata-WAN'
+set firewall.@rule[-1].src='wan'
 set firewall.@rule[-1].proto='tcp'
 set firewall.@rule[-1].dest_port='19999'
 set firewall.@rule[-1].target='REJECT'
@@ -62,5 +66,5 @@ EOF
 
 /etc/init.d/netdata enable 2>/dev/null || true
 
-logger -t netdata-harden "netdata bound to 127.0.0.1. Access via 'ssh -L 19999:localhost:19999 root@router' then http://localhost:19999/"
+logger -t netdata-harden "netdata bound to ${LAN_IP}+localhost; LAN clients can browse, WAN blocked"
 exit 0

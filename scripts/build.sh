@@ -81,28 +81,38 @@ if [[ ${BUILD_RC} -ne 0 ]]; then
     exit ${BUILD_RC}
 fi
 
-echo ">>> Collecting artifacts (only files newer than build start) ..."
+echo ">>> Collecting artifacts ..."
 # Clear old OUT to prevent stale confusion
 rm -f "${OUT}"/* 2>/dev/null || true
 
-ARTDIRS=$(find "${SRC}/bin/targets" -mindepth 2 -maxdepth 2 -type d 2>/dev/null)
+# Resolve THIS role's target dir from .config (avoids picking up
+# leftovers from previous role builds in bin/targets/<other_arch>/).
+TARGET_BOARD=$(grep -E '^CONFIG_TARGET_BOARD=' "${SRC}/.config" | cut -d'"' -f2)
+TARGET_SUBTARGET=$(grep -E '^CONFIG_TARGET_SUBTARGET=' "${SRC}/.config" | cut -d'"' -f2)
+ARTDIR="${SRC}/bin/targets/${TARGET_BOARD}/${TARGET_SUBTARGET}"
+echo "    role target: ${TARGET_BOARD}/${TARGET_SUBTARGET}"
+echo "    art dir:     ${ARTDIR}"
+
+if [[ ! -d "${ARTDIR}" ]]; then
+    echo "ERROR: target output dir not found: ${ARTDIR}"
+    exit 6
+fi
+
 COUNT=0
-for ARTDIR in $ARTDIRS; do
-    for ext in img.gz vmdk itb bin; do
-        for f in "${ARTDIR}"/*.${ext}; do
-            [[ -f "$f" ]] || continue
-            mt=$(stat -c %Y "$f")
-            if [[ $mt -ge $((BUILD_START_EPOCH - 60)) ]]; then
-                cp -v "$f" "${OUT}/" && COUNT=$((COUNT+1))
-            fi
-        done
+for ext in img.gz vmdk itb bin; do
+    for f in "${ARTDIR}"/*.${ext}; do
+        [[ -f "$f" ]] || continue
+        mt=$(stat -c %Y "$f")
+        if [[ $mt -ge $((BUILD_START_EPOCH - 60)) ]]; then
+            cp -v "$f" "${OUT}/" && COUNT=$((COUNT+1))
+        fi
     done
-    for f in sha256sums profiles.json version.buildinfo; do
-        [[ -f "${ARTDIR}/$f" ]] && cp -v "${ARTDIR}/$f" "${OUT}/" 2>/dev/null || true
-    done
-    for f in "${ARTDIR}"/*.manifest; do
-        [[ -f "$f" ]] && cp -v "$f" "${OUT}/" 2>/dev/null || true
-    done
+done
+for f in sha256sums profiles.json version.buildinfo; do
+    [[ -f "${ARTDIR}/$f" ]] && cp -v "${ARTDIR}/$f" "${OUT}/" 2>/dev/null || true
+done
+for f in "${ARTDIR}"/*.manifest; do
+    [[ -f "$f" ]] && cp -v "$f" "${OUT}/" 2>/dev/null || true
 done
 
 if [[ $COUNT -eq 0 ]]; then

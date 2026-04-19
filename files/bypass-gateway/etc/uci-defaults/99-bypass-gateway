@@ -40,12 +40,11 @@ set homeproxy.config.china_dns_server='223.5.5.5'
 commit homeproxy
 EOF
 
-# --- DNS leak fix: route dnsmasq through sing-box DNS (port 5333) instead
-#     of https-dns-proxy (which leaked all foreign queries to alidns).
-#     sing-box's DNS module routes by geosite-cn:
-#       - CN domains   -> 223.5.5.5 direct (acceptable)
-#       - non-CN       -> TCP 8.8.8.8 via main-out (proxy) — no leak
-#     https-dns-proxy stays installed but DISABLED for bypass-gateway role.
+# --- DNS: dnsmasq → sing-box DNS module (port 5333).
+# sing-box has built-in anti-leak: CN domains via china-dns direct,
+# non-CN via main-dns through proxy. Zero leak in proxy mode.
+# https-dns-proxy is REMOVED from this role (sing-box covers the same job
+# better — was just bloat from earlier iteration).
 uci -q batch <<EOF
 delete dhcp.@dnsmasq[0].server
 add_list dhcp.@dnsmasq[0].server='127.0.0.1#5333'

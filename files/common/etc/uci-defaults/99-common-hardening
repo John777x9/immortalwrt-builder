@@ -10,10 +10,13 @@ set dropbear.@dropbear[0].GatewayPorts='off'
 commit dropbear
 EOF
 
-# --- dnsmasq hardening: forward to local https-dns-proxy (DoH) ---
-# Upstream DoH listeners are configured by 92-netdata-harden's siblings
-# (https-dns-proxy ships defaulting to 127.0.0.1:5053 alidns DoH +
-#  127.0.0.1:5054 cloudflare DoH).
+# --- dnsmasq hardening (general flags only) ---
+# IMPORTANT: do NOT set dhcp.@dnsmasq[0].server here. Per-role uci-defaults
+# (e.g. 99-bypass-gateway) configures DNS upstream and would be RACE-LOST
+# under alphabetic execution order ('99-bypass-gateway' runs BEFORE
+# '99-common-hardening', so common would overwrite bypass's DNS choice).
+# strictorder=1 lets per-role files specify ordered fallback (sing-box first,
+# https-dns-proxy second).
 uci -q batch <<EOF
 set dhcp.@dnsmasq[0].noresolv='1'
 set dhcp.@dnsmasq[0].rebind_protection='1'
@@ -23,9 +26,7 @@ set dhcp.@dnsmasq[0].cachesize='2000'
 set dhcp.@dnsmasq[0].filter_aaaa='1'
 set dhcp.@dnsmasq[0].interface='br-lan'
 set dhcp.@dnsmasq[0].domainneeded='1'
-delete dhcp.@dnsmasq[0].server
-add_list dhcp.@dnsmasq[0].server='127.0.0.1#5053'
-add_list dhcp.@dnsmasq[0].server='127.0.0.1#5054'
+set dhcp.@dnsmasq[0].strictorder='1'
 commit dhcp
 EOF
 

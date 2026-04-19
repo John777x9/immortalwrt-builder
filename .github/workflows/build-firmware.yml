@@ -9,17 +9,9 @@ on:
         description: 'Roles to build (comma-separated, or "all")'
         required: false
         default: 'all'
-      branch:
-        description: 'ImmortalWrt branch'
-        required: false
-        default: 'openwrt-24.10'
-  # NOTE: push trigger intentionally REMOVED. Primary build is on GCP
-  # (faster, ccache-warm, user-owned). GH Actions is for unattended monthly
-  # rebuilds + emergency manual runs only.
 
 env:
   IMMORTALWRT_REPO: https://github.com/immortalwrt/immortalwrt.git
-  IMMORTALWRT_BRANCH: ${{ inputs.branch || 'openwrt-24.10' }}
 
 permissions:
   contents: write           # required for release publishing
@@ -29,27 +21,44 @@ jobs:
     name: Compute build matrix
     runs-on: ubuntu-22.04
     outputs:
-      roles: ${{ steps.gen.outputs.roles }}
+      jobs: ${{ steps.gen.outputs.jobs }}
     steps:
       - uses: actions/checkout@v4
       - id: gen
         run: |
+          # Each config can pin its branch via filename suffix:
+          #   *-2305.config  → openwrt-23.05
+          #   else           → openwrt-24.10
+          # Output is a JSON array of {role, branch} objects for matrix.
+          set -e
           if [[ "${{ inputs.roles }}" == "" || "${{ inputs.roles }}" == "all" ]]; then
-            ROLES=$(ls configs/*.config | xargs -n1 basename | sed 's/\.config$//' | jq -R . | jq -sc .)
+              ROLES=$(ls configs/*.config | xargs -n1 basename | sed 's/\.config$//' | sort -u)
           else
-            ROLES=$(echo "${{ inputs.roles }}" | tr ',' '\n' | jq -R . | jq -sc .)
+              ROLES=$(echo "${{ inputs.roles }}" | tr ',' '\n' | tr -d ' ')
           fi
-          echo "roles=$ROLES" >> "$GITHUB_OUTPUT"
-          echo "Matrix roles: $ROLES"
+          JSON='['
+          first=1
+          for r in $ROLES; do
+              case "$r" in
+                  *-2305) BR="openwrt-23.05" ;;
+                  *)      BR="openwrt-24.10" ;;
+              esac
+              [ $first -eq 0 ] && JSON="${JSON},"
+              JSON="${JSON}{\"role\":\"${r}\",\"branch\":\"${BR}\"}"
+              first=0
+          done
+          JSON="${JSON}]"
+          echo "jobs=${JSON}" >> "$GITHUB_OUTPUT"
+          echo "Matrix jobs: ${JSON}"
 
   build:
     needs: matrix-prep
-    name: Build ${{ matrix.role }}
+    name: Build ${{ matrix.role }} (${{ matrix.branch }})
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
-        role: ${{ fromJson(needs.matrix-prep.outputs.roles) }}
+        include: ${{ fromJson(needs.matrix-prep.outputs.jobs) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -62,7 +71,7 @@ jobs:
           sudo apt-get clean
           df -h /
 
-      - name: Install build dependencies
+      - name: Install build dependencies (official OpenWrt buildroot list)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -72,39 +81,36 @@ jobs:
             swig time unzip wget xsltproc zlib1g-dev bzip2 flex bison \
             libpython3-dev qemu-utils zstd jq
 
-      - name: Restore ccache
+      - name: Restore ccache (per role + branch)
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ccache-${{ matrix.role }}-${{ env.IMMORTALWRT_BRANCH }}-${{ github.sha }}
+          key: ccache-${{ matrix.role }}-${{ matrix.branch }}-${{ github.sha }}
           restore-keys: |
-            ccache-${{ matrix.role }}-${{ env.IMMORTALWRT_BRANCH }}-
+            ccache-${{ matrix.role }}-${{ matrix.branch }}-
             ccache-${{ matrix.role }}-
 
-      - name: Clone ImmortalWrt source
+      - name: Clone ImmortalWrt source (${{ matrix.branch }})
         run: |
-          git clone --depth 1 -b "${IMMORTALWRT_BRANCH}" "${IMMORTALWRT_REPO}" source
+          git clone --depth 1 -b "${{ matrix.branch }}" "${IMMORTALWRT_REPO}" source
           cd source
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Apply local patches against upstream source
+      - name: Apply local patches
         run: |
           if [ -d patches ] && ls patches/*.patch >/dev/null 2>&1; then
             for p in patches/*.patch; do
               echo "Applying $p ..."
               if git -C source apply --check "../$p" 2>/dev/null; then
-                git -C source apply "../$p"
-                echo "  applied"
+                git -C source apply "../$p" && echo "  applied"
               else
                 echo "  skip (already applied or N/A)"
               fi
             done
-          else
-            echo "No patches/*.patch — skipping"
           fi
 
-      - name: Apply diffconfig
+      - name: Apply diffconfig + defconfig
         run: |
           cp configs/${{ matrix.role }}.config source/.config
           cd source && make defconfig
@@ -115,12 +121,8 @@ jobs:
           [ -d files/common ] && cp -a files/common/. source/files/
           [ -d "files/${{ matrix.role }}" ] && cp -a "files/${{ matrix.role }}/." source/files/
           chmod +x source/files/etc/uci-defaults/* 2>/dev/null || true
-          BUILDDATE=$(date -u +%Y-%m-%dT%H:%MZ)
-          for f in source/files/etc/banner source/files/etc/uci-defaults/99-common-hardening; do
-            [ -f "$f" ] && sed -i "s|%BUILDDATE%|${BUILDDATE}|g" "$f"
-          done
 
-      - name: Build firmware
+      - name: Build firmware (official: make download + make world)
         timeout-minutes: 300
         working-directory: source
         run: |
@@ -129,19 +131,25 @@ jobs:
           make download -j8 V=s 2>&1 | tail -30 || true
           make -j$(nproc) V=s
 
-      - name: Collect artifacts
+      - name: Collect artifacts (only this role's target dir)
         run: |
+          set -e
           mkdir -p output
-          find source/bin/targets -mindepth 2 -maxdepth 2 -type d | while read d; do
-            cp "$d"/*.img.gz       output/ 2>/dev/null || true
-            cp "$d"/*.vmdk         output/ 2>/dev/null || true
-            cp "$d"/*.itb          output/ 2>/dev/null || true
-            cp "$d"/sha256sums     output/ 2>/dev/null || true
-            cp "$d"/profiles.json  output/ 2>/dev/null || true
-            cp "$d"/version.buildinfo output/ 2>/dev/null || true
-            cp "$d"/*.manifest     output/ 2>/dev/null || true
+          BOARD=$(grep -E '^CONFIG_TARGET_BOARD=' source/.config | cut -d'"' -f2)
+          SUB=$(grep -E '^CONFIG_TARGET_SUBTARGET=' source/.config | cut -d'"' -f2)
+          ARTDIR="source/bin/targets/${BOARD}/${SUB}"
+          echo "art dir: ${ARTDIR}"
+          for ext in img.gz vmdk itb bin fip; do
+            for f in "${ARTDIR}"/*.${ext}; do
+              [ -f "$f" ] && cp -v "$f" output/
+            done
           done
-          (cd output && sha256sum * 2>/dev/null > SHA256SUMS.txt) || true
+          for f in sha256sums profiles.json version.buildinfo; do
+            [ -f "${ARTDIR}/$f" ] && cp -v "${ARTDIR}/$f" output/
+          done
+          for f in "${ARTDIR}"/*.manifest; do
+            [ -f "$f" ] && cp -v "$f" output/
+          done
           ls -lh output/
 
       - name: Upload artifacts (7-day retention)
@@ -152,7 +160,7 @@ jobs:
           retention-days: 7
 
   release:
-    name: Publish monthly Release
+    name: Publish Release
     needs: build
     runs-on: ubuntu-22.04
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -161,21 +169,18 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: Stage release files
+
+      - name: Stage release files (per-role prefix on duplicates)
         run: |
-          # Flatten 3 role artifacts into release/ with ROLE prefix on
-          # otherwise-duplicate names (sha256sums, *.manifest, etc).
-          # Without this, GitHub release upload races on identical names
-          # and the action returns rc!=0 even though all assets uploaded.
           mkdir -p release
           for d in artifacts/firmware-*/; do
             ROLE=$(basename "$d" | sed 's/^firmware-//')
             for f in "$d"*; do
               [ -f "$f" ] || continue
               base=$(basename "$f")
-              # Prefix duplicate-prone files with role name
+              # Same-named-across-roles files get role prefix
               case "$base" in
-                sha256sums|SHA256SUMS.txt|profiles.json|version.buildinfo|*.manifest)
+                sha256sums|profiles.json|version.buildinfo|*.manifest)
                   cp "$f" "release/${ROLE}-${base}"
                   ;;
                 *)
@@ -184,45 +189,50 @@ jobs:
               esac
             done
           done
+          (cd release && sha256sum * 2>/dev/null > SHA256SUMS.txt)
           (cd release && find . -maxdepth 1 -type f | sort > FILES.txt)
           ls -lh release/
+
       - name: Compute release tag
         id: tag
         run: |
           DATE=$(date -u +%Y%m%d)
           echo "tag=build-${DATE}-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-          echo "name=ImmortalWrt 24.10 ($(date -u +%Y-%m-%d))" >> "$GITHUB_OUTPUT"
-      - name: Create / update Release
+          echo "name=ImmortalWrt firmware ($(date -u +%Y-%m-%d))" >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.name }}
           body: |
-            **Automated monthly build of ImmortalWrt 24.10 firmware.**
+            ImmortalWrt firmware — automated build.
 
-            Built on `${{ github.event.repository.updated_at }}` from `${{ github.sha }}`.
+            Built `${{ github.event.repository.updated_at }}` from `${{ github.sha }}`.
 
             ## Variants
-            - `main-router`             — x86_64 主路由（PPPoE / WireGuard / NAT）
-            - `bypass-gateway`          — x86_64 旁路网关（精简）
-            - `mtk-filogic-enterprise`  — CMCC RAX3000M 企业边界路由（aarch64）
+            - **main-router** (x86_64, ImmortalWrt 24.10) — 商用主路由：PPPoE / WireGuard / NAT / UPnP / sing-box 透明代理
+            - **bypass-gateway** (x86_64, ImmortalWrt 24.10) — 商用旁路网关：纯透明代理 + 监控 + 流量统计
+            - **mtk-rax3000m-ubootmod-2305** (aarch64, ImmortalWrt 23.05) — CMCC RAX3000M with ubootmod
 
-            ## Pick the right file
-            | 用途 | 文件名 |
-            |------|--------|
-            | x86 物理机 / U 盘 (UEFI) | `*-squashfs-combined-efi.img.gz` |
-            | x86 PVE / ESXi (UEFI VM) | `*-squashfs-combined-efi.vmdk` |
-            | RAX3000M sysupgrade      | `*-cmcc_rax3000m-squashfs-sysupgrade.itb` |
+            ## How to flash
+            | Use | File |
+            |-----|------|
+            | x86 物理机 / U 盘 UEFI | `immortalwrt-x86-64-generic-squashfs-combined-efi.img.gz` |
+            | x86 PVE / ESXi UEFI VM | `immortalwrt-x86-64-generic-squashfs-combined-efi.vmdk` |
+            | x86 物理机 / VM Legacy | `immortalwrt-x86-64-generic-squashfs-combined.img.gz` |
+            | RAX3000M (ubootmod sysupgrade) | `immortalwrt-mediatek-filogic-cmcc_rax3000m-nand-ubootmod-squashfs-sysupgrade.bin` |
 
-            校验：见 `SHA256SUMS.txt`。
+            Each role has its own `<role>-sha256sums`. Aggregate `SHA256SUMS.txt` covers everything.
           files: |
             release/*.img.gz
             release/*.vmdk
             release/*.itb
             release/*.bin
+            release/*.fip
             release/*-sha256sums
-            release/*-SHA256SUMS.txt
             release/*.manifest
+            release/SHA256SUMS.txt
             release/FILES.txt
           draft: false
           prerelease: false

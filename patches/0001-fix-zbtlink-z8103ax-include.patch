@@ -1,0 +1,19 @@
+Fix broken include in upstream commit bae932d (mediatek: add support for
+device zbt-z8103ax-c). The new device's shared dtsi tries to include
+'mt7981b.dtsi' which doesn't exist (only 'mt7981.dtsi' exists in kernel
+headers). Without this patch, MTK target build fails for ALL devices
+because target/linux/install compiles every device's DTB.
+
+Upstream fix pending; remove this patch once ImmortalWrt 24.10 fixes it.
+
+--- a/target/linux/mediatek/dts/mt7981b-zbtlink-zbt-z8103ax.dtsi
++++ b/target/linux/mediatek/dts/mt7981b-zbtlink-zbt-z8103ax.dtsi
+@@ -2,7 +2,7 @@
+ 
+ /dts-v1/;
+ 
+-#include "mt7981b.dtsi"
++#include "mt7981.dtsi"
+ 
+ / {
+ 	aliases {

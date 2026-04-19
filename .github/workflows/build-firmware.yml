@@ -122,7 +122,7 @@ jobs:
           [ -d "files/${{ matrix.role }}" ] && cp -a "files/${{ matrix.role }}/." source/files/
           chmod +x source/files/etc/uci-defaults/* 2>/dev/null || true
 
-      - name: Build firmware (official: make download + make world)
+      - name: "Build firmware (make download + make world)"
         timeout-minutes: 300
         working-directory: source
         run: |

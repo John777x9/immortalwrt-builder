@@ -12,10 +12,9 @@
 set -e
 
 NETDATA_CONF=/etc/netdata/netdata.conf
-LAN_IP=$(uci -q get network.lan.ipaddr || echo "192.168.1.1")
 
 mkdir -p /etc/netdata
-cat > "$NETDATA_CONF" <<EOF
+cat > "$NETDATA_CONF" <<'EOF'
 [global]
     run as user = netdata
     memory mode = ram
@@ -24,7 +23,7 @@ cat > "$NETDATA_CONF" <<EOF
     anonymous statistics = no
 
 [web]
-    bind to = ${LAN_IP} 127.0.0.1
+    bind to = *
     allow connections from = localhost 192.168.*.* 10.*.*.* 172.16.*.* 172.17.*.* 172.18.*.* 172.19.*.* 172.20.*.* 172.21.*.* 172.22.*.* 172.23.*.* 172.24.*.* 172.25.*.* 172.26.*.* 172.27.*.* 172.28.*.* 172.29.*.* 172.30.*.* 172.31.*.*
     allow dashboard from = localhost 192.168.*.* 10.*.*.* 172.16.*.* 172.17.*.* 172.18.*.* 172.19.*.* 172.20.*.* 172.21.*.* 172.22.*.* 172.23.*.* 172.24.*.* 172.25.*.* 172.26.*.* 172.27.*.* 172.28.*.* 172.29.*.* 172.30.*.* 172.31.*.*
     allow badges from = *
@@ -66,5 +65,5 @@ EOF
 
 /etc/init.d/netdata enable 2>/dev/null || true
 
-logger -t netdata-harden "netdata bound to ${LAN_IP}+localhost; LAN clients can browse, WAN blocked"
+logger -t netdata-harden "netdata bound to all interfaces; firewall REJECTs WAN -> :19999"
 exit 0
